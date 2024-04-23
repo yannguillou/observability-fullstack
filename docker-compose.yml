@@ -27,3 +27,23 @@ services:
     ports:
       - 9000: 9000
     restart: always
+version: "3.4"
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    entrypoint: [""]
+    command: ["sh", "-c", "mkdir -p /data/minio && mkdir -p /data/minio/mimir && mkdir -p /data/minio/loki && minio server --quiet /data/minio"]
+    environment:
+      MINIO_ROOT_USER: mimir
+      MINIO_ROOT_PASSWORD: supersecret
+      MINIO_ACCESS_KEY: minio123
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+      MINIO_SECRET_KEY: minio456
+    volumes:
+      - minio-data:/data
+    ports:
+      - 9000:9000
+    restart: always
+volumes:
+  minio-data:
