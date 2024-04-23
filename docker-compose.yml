@@ -62,6 +62,21 @@ services:
       - minio3
       - minio4
 
+ mimir:
+    image: grafana/mimir:latest
+    command: ["-config.file=/etc/mimir.yaml"]
+    hostname: mimir
+    depends_on:
+      - minio1
+      - minio2
+      - minio3
+      - minio4
+    volumes:
+      - ./config/mimir.yaml:/etc/mimir.yaml
+      - ./config/alertmanager-fallback-config.yaml:/etc/alertmanager-fallback-config.yaml
+      - mimir-data:/data
+
+
 ## By default this config uses default local driver,
 ## For custom volumes replace with volume driver configuration.
 volumes:
@@ -73,4 +88,7 @@ volumes:
   data3-2:
   data4-1:
   data4-2:
+  mimir-data:
+
+  
 
