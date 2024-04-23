@@ -1,0 +1,460 @@
+# Stack Grafana+Prometheus+Cadvisor+Alertmanager+Node-exporter
+
+version: '3.7'
+
+volumes:
+    prometheus_data: {}
+    grafana_data: {}
+
+networks:
+  front-tier:
+  back-tier:
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.36.2
+    volumes:
+      - ./prometheus/:/etc/prometheus/
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - 9090:9090
+    links:
+      - cadvisor:cadvisor
+      - alertmanager:alertmanager
+#      - pushgateway:pushgateway
+    depends_on:
+      - cadvisor
+#      - pushgateway
+    networks:
+      - back-tier
+    restart: always
+#    deploy:
+#      placement:
+#        constraints:
+#          - node.hostname == ${HOSTNAME}
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /:/host:ro,rslave
+    command: 
+      - '--path.rootfs=/host'
+      - '--path.procfs=/host/proc' 
+      - '--path.sysfs=/host/sys'
+      - --collector.filesystem.ignored-mount-points
+      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
+    ports:
+      - 9100:9100
+    networks:
+      - back-tier
+    restart: always
+    deploy:
+      mode: global
+
+  alertmanager:
+    image: prom/alertmanager
+    ports:
+      - 9093:9093
+    volumes:
+      - ./alertmanager/:/etc/alertmanager/
+    networks:
+      - back-tier
+    restart: always
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+#    deploy:
+#      placement:
+#        constraints:
+#          - node.hostname == ${HOSTNAME}
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - 8080:8080
+    networks:
+      - back-tier
+    restart: always
+    deploy:
+      mode: global
+
+  grafana:
+    image: grafana/grafana
+    user: "472"
+    depends_on:
+      - prometheus
+    ports:
+      - 3000:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
+    env_file:
+      - ./grafana/config.monitoring
+    networks:
+      - back-tier
+      - front-tier
+    restart: always
+
+#  pushgateway:
+#    image: prom/pushgateway
+#    restart: always
+#    expose:
+#      - 9091
+#    ports:
+#      - "9091:9091"
+#    networks:
+#      - back-tier
+
+Stack Grafana+(Loki+Minio)+Syslog-NG+PromTail+Prometheus+Cadvisor+Node-Exporter
+
+networks:
+  loki: {}
+services:
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:latest
+    networks:
+      loki: null
+    ports:
+    - published: 8080
+      target: 8080
+    restart: always
+    volumes:
+    - /:/rootfs:ro
+    - /var/run:/var/run:rw
+    - /sys:/sys:ro
+    - /var/lib/docker:/var/lib/docker:ro
+  grafana:
+    container_name: grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/no_folder/loki_syslog_aio_overview.json
+    image: grafana/grafana:8.1.2
+    networks:
+      loki: null
+    ports:
+    - protocol: tcp
+      published: 3000
+      target: 3000
+    restart: always
+    volumes:
+    - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+  loki:
+    command: -config.file=/etc/loki/loki-config.yml
+    container_name: loki
+    depends_on:
+    - minio
+    image: grafana/loki:2.3.0
+    networks:
+      loki: null
+    ports:
+    - protocol: tcp
+      published: 3100
+      target: 3100
+    restart: always
+    volumes:
+    - ./config/loki-config-s3.yml:/etc/loki/loki-config.yml:ro
+  minio:
+    command: -c 'mkdir -p /data/loki && /usr/bin/docker-entrypoint.sh minio server /data'
+    container_name: minio
+    entrypoint: sh
+    environment:
+      MINIO_ACCESS_KEY: minio123
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+      MINIO_SECRET_KEY: minio456
+    healthcheck:
+      interval: 30s
+      retries: 3
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:9000/minio/health/live
+      timeout: 20s
+    image: minio/minio:latest
+    networks:
+      loki: null
+    ports:
+    - published: 9000
+      target: 9000
+    restart: always
+  node-exporter:
+    command: --path.rootfs=/host
+    container_name: node-exporter
+    image: prom/node-exporter:latest
+    networks:
+      loki: null
+    pid: host
+    ports:
+    - published: 9100
+      target: 9100
+    restart: always
+    volumes:
+    - /:/host:ro,rslave
+  prometheus:
+    command:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --web.enable-admin-api
+    - --web.enable-lifecycle
+    container_name: prometheus
+    image: prom/prometheus:latest
+    networks:
+      loki: null
+    ports:
+    - published: 9090
+      target: 9090
+    restart: always
+    volumes:
+    - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  promtail:
+    command: -config.file=/etc/promtail/promtail-config.yml
+    container_name: promtail
+    image: grafana/promtail:2.3.0
+    networks:
+      loki: null
+    ports:
+    - protocol: tcp
+      published: 1514
+      target: 1514
+    - protocol: tcp
+      published: 9080
+      target: 9080
+    restart: always
+    volumes:
+    - ./config/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+  syslog-ng:
+    command: -edv
+    container_name: syslog-ng
+    depends_on:
+    - promtail
+    image: balabit/syslog-ng:latest
+    networks:
+      loki: null
+    ports:
+    - protocol: udp
+      published: 514
+      target: 514
+    - protocol: tcp
+      published: 601
+      target: 601
+    restart: always
+    volumes:
+    - ./config/syslog-ng.conf:/etc/syslog-ng/syslog-ng.conf:ro
+version: '3.3'
+
+Stack Mimir+Prometheus+Minio+NGinx
+
+version: "3.4"
+services:
+  minio:
+    image: minio/minio
+    entrypoint: [""]
+    command: ["sh", "-c", "mkdir -p /data/mimir && minio server --quiet /data"]
+    environment:
+      - MINIO_ROOT_USER=mimir
+      - MINIO_ROOT_PASSWORD=supersecret
+    volumes:
+      - minio-data:/data
+
+  grafana:
+    image: grafana/grafana:latest
+    pull_policy: always
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_USERS_DEFAULT_THEME=light
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=critical
+    volumes:
+      - ./config/grafana-provisioning-dashboards.yaml:/etc/grafana/provisioning/dashboards/provisioning-dashboards.yaml:ro
+      - ./config/grafana-provisioning-datasources.yaml:/etc/grafana/provisioning/datasources/provisioning-datasources.yaml:ro
+      # Explicitly list the dashboards we want to show in the demo. We intentionally exclude dashboards that require
+      # Kubernetes metrics (eg. resources or networking) and other services not available in the demo (eg. Grafana Loki).
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-alertmanager.json:/var/lib/grafana/dashboards/mimir-alertmanager.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-compactor.json:/var/lib/grafana/dashboards/mimir-compactor.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-object-store.json:/var/lib/grafana/dashboards/mimir-object-store.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-overrides.json:/var/lib/grafana/dashboards/mimir-overrides.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-queries.json:/var/lib/grafana/dashboards/mimir-queries.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-reads.json:/var/lib/grafana/dashboards/mimir-reads.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-ruler.json:/var/lib/grafana/dashboards/mimir-ruler.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-tenants.json:/var/lib/grafana/dashboards/mimir-tenants.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-top-tenants.json:/var/lib/grafana/dashboards/mimir-top-tenants.json:ro
+      - ../../../../../operations/mimir-mixin-compiled/dashboards/mimir-writes.json:/var/lib/grafana/dashboards/mimir-writes.json:ro
+    ports:
+      - 9000:3000
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --log.level=error
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - ../../../../../operations/mimir-mixin-compiled/rules.yaml:/etc/prometheus/rules.yaml
+    depends_on:
+      - "mimir-1"
+      - "mimir-2"
+      - "mimir-3"
+
+  load-balancer:
+    image: nginx:latest
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - "mimir-1"
+      - "mimir-2"
+      - "mimir-3"
+    ports:
+      - 9009:9009
+
+  mimir-1:
+    image: grafana/mimir:latest
+    command: ["-config.file=/etc/mimir.yaml"]
+    hostname: mimir-1
+    depends_on:
+      - minio
+    volumes:
+      - ./config/mimir.yaml:/etc/mimir.yaml
+      - ./config/alertmanager-fallback-config.yaml:/etc/alertmanager-fallback-config.yaml
+      - mimir-1-data:/data
+
+  mimir-2:
+    image: grafana/mimir:latest
+    command: ["-config.file=/etc/mimir.yaml"]
+    hostname: mimir-2
+    depends_on:
+      - minio
+    volumes:
+      - ./config/mimir.yaml:/etc/mimir.yaml
+      - ./config/alertmanager-fallback-config.yaml:/etc/alertmanager-fallback-config.yaml
+      - mimir-2-data:/data
+
+  mimir-3:
+    image: grafana/mimir:latest
+    command: ["-config.file=/etc/mimir.yaml"]
+    hostname: mimir-3
+    depends_on:
+      - minio
+    volumes:
+      - ./config/mimir.yaml:/etc/mimir.yaml
+      - ./config/alertmanager-fallback-config.yaml:/etc/alertmanager-fallback-config.yaml
+      - mimir-3-data:/data
+
+volumes:
+  mimir-1-data:
+  mimir-2-data:
+  mimir-3-data:
+  minio-data:
+
+# Reference for exteranl_links and bridge containers
+# https://blog.virtualzone.de/2016/09/docker-compose-link-containers-outside-compose-file-using-external_links.html
+
+x-promgen-env: &x-promgen-env
+  CELERY_BROKER_URL: redis://redis:6379/0
+  DATABASE_URL: mysql://promgen:promgen@mysql:3306/promgen
+  SECRET_KEY: docker-compose-demo
+  DEBUG: 1
+
+version: "2"
+services:
+  web:
+    build: .
+    image: line/promgen
+    command: web -b 0.0.0.0:8000
+    environment:
+      <<: *x-promgen-env
+    ports:
+      - "8080:8000"
+    links:
+      - mysql
+      - redis
+
+  worker:
+    image: line/promgen
+    # For our demo, we'll have the worker listen both on the
+    # default celery queue (for notification processing) and
+    # on the prometheus queue (for deploying targets/etc)
+    command: worker -l debug --queues prometheus,celery
+    environment:
+      <<: *x-promgen-env
+    links:
+      - prometheus
+      - mysql
+      - redis
+    volumes:
+      - ./docker:/etc/prometheus
+
+  prometheus:
+    image: prom/prometheus
+    links:
+      - alertmanager
+      - blackbox
+    ports:
+      - "9090:9090"
+    # We need to repeat some of the default options and also add lifecycle
+    # so that we can call to reload Prometheus
+    command: >
+      --config.file=/etc/prometheus/prometheus.yml
+      --log.level=info
+      --storage.tsdb.path=/prometheus
+      --web.console.libraries=/usr/share/prometheus/console_libraries
+      --web.console.templates=/usr/share/prometheus/consoles
+      --web.enable-lifecycle
+    volumes:
+      - ./docker:/etc/prometheus
+      - ./docker/prom_data:/prometheus
+
+  blackbox:
+    image: prom/blackbox-exporter
+    network_mode: bridge
+    volumes:
+      - ./docker:/etc/prometheus
+
+  alertmanager:
+    image: prom/alertmanager
+    links:
+      - web
+    ports:
+      - "9093:9093"
+    command: >
+      --config.file=/etc/alertmanager/alertmanager.yml
+      --log.level=info
+    volumes:
+      - ./docker:/etc/prometheus
+
+  mysql:
+    image: mysql:8
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: promgen
+      MYSQL_USER: promgen
+      MYSQL_PASSWORD: promgen
+    volumes:
+      - ./docker/mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis
+
